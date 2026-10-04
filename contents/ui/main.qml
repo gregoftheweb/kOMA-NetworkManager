@@ -164,7 +164,7 @@ PlasmoidItem {
         onTriggered: root.refreshNetworks(false)
     }
     onExpandedChanged: {
-        if (expanded) {
+        if (root.expanded) {
             pingSamples = []
             pingMs = -1
             lossPercent = 0
@@ -178,8 +178,11 @@ PlasmoidItem {
     compactRepresentation: MouseArea {
         hoverEnabled: true
         onClicked: root.expanded = !root.expanded
+        // system tray size, so it lines up with the tray icons next to it
         Kirigami.Icon {
-            anchors.fill: parent
+            anchors.centerIn: parent
+            width: Math.min(parent.width, parent.height, Kirigami.Units.iconSizes.smallMedium)
+            height: width
             source: Plasmoid.icon
             active: parent.containsMouse
         }

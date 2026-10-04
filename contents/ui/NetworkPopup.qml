@@ -23,7 +23,10 @@ PlasmaExtras.Representation {
 
     Layout.minimumWidth: Kirigami.Units.gridUnit * 22
     Layout.preferredWidth: Kirigami.Units.gridUnit * 24
-    Layout.preferredHeight: Kirigami.Units.gridUnit * 30
+    // fit the content (short without Wi-Fi), up to a scrolling maximum
+    readonly property real fitHeight: Math.min(content.implicitHeight + (popup.header ? popup.header.implicitHeight : 0) + Kirigami.Units.largeSpacing * 2, Kirigami.Units.gridUnit * 30)
+    Layout.preferredHeight: fitHeight
+    Layout.maximumHeight: fitHeight
     collapseMarginsHint: true
 
     header: PlasmaExtras.PlasmoidHeading {
@@ -80,6 +83,7 @@ PlasmaExtras.Representation {
         contentWidth: availableWidth
 
         ColumnLayout {
+            id: content
             width: scroll.availableWidth
             spacing: Kirigami.Units.largeSpacing
 
@@ -229,6 +233,19 @@ PlasmaExtras.Representation {
                 delegate: WifiRow {
                     host: popup.host
                 }
+            }
+            Kirigami.ListSectionHeader {
+                Layout.fillWidth: true
+                visible: !popup.host.hasWifi
+                text: "Wi-Fi"
+            }
+            PlasmaComponents.Label {
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.largeSpacing
+                Layout.rightMargin: Kirigami.Units.largeSpacing
+                visible: !popup.host.hasWifi
+                text: "No Wi-Fi on this machine."
+                opacity: 0.7
             }
             PlasmaComponents.Label {
                 Layout.fillWidth: true
