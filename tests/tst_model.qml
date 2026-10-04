@@ -111,4 +111,17 @@ TestCase {
         compare(M.parseJson('{"mbps": 3}').mbps, 3)
         compare(M.parseJson("not json"), null)
     }
+
+    function test_speedText() {
+        compare(M.speedText(19.4, true, "ok"), "19 Mbit/s")
+        // keep showing the last result while retesting
+        compare(M.speedText(-1, true, ""), "testing…")
+        compare(M.speedText(19.4, false, "limited"), "rt. limit [last:19mbps]")
+        compare(M.speedText(1.54, false, "limited"), "rt. limit [last:1.5mbps]")
+        compare(M.speedText(-1, false, "limited"), "rt. limit [last:—]")
+        compare(M.speedText(19.4, false, "failed"), "19 Mbit/s")
+        // a failure keeps the last good value
+        compare(M.speedText(-1, false, "failed"), "unavailable")
+        compare(M.speedText(-1, false, ""), "—")
+    }
 }

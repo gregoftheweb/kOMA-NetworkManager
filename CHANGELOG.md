@@ -11,7 +11,8 @@ All notable changes to kOMA Network Manager. The format follows [Keep a Changelo
 - One-click DNS provider: DHCP, Cloudflare, Google, or Custom servers. Set on every Ethernet and Wi-Fi connection through NetworkManager and re-applied live, with no password or root helper.
 - Wi-Fi: known and other networks with signal and lock icons; connect, disconnect, forget; Wi-Fi on/off switch. Machines without Wi-Fi show "No Wi-Fi on this machine." and a shorter popup.
 - The popup fits its content; the panel icon is system-tray size.
-- Speed test while the popup is open: continuous ~3 s download (max 10 MB) and upload (max 2 MB) samples against speed.cloudflare.com, never while closed; pause button in the header. `komanet speedtest down|up`.
+- Speed test while the popup is open: one request per ~3 s download (max 10 MB) or streamed upload (max 2 MB) sample against speed.cloudflare.com, back to back with a 5 s pause, never while closed; pause button in the header. `komanet speedtest down|up` (exit code 3 when rate-limited).
+- When the speed test server rate-limits (HTTP 429), the cells read `rt. limit [last:19mbps]` with the last good result, and the next try waits a minute. Last results are kept in the widget's settings, so they survive restarts.
 - `komanet` CLI: `status`, `ping`, `dns`, `dns set`, `wifi list|connect|disconnect|forget|radio`, `speedtest`.
 - Tests (pytest against recorded nmcli output, QML unit tests), linting and formatting gates (`make check`), pre-commit hook, `make package`.
 

@@ -8,7 +8,7 @@ kOMA Network Manager brings [Omarchy](https://omarchy.org)'s network panel to KD
 
 - **Connection header**: "Ethernet (1gbit)" or your Wi-Fi network's name, and a Wi-Fi on/off switch.
 - **Live stats** while the popup is open: Ping and Packet Loss, Receiving and Sending rates, Downloaded and Uploaded totals, IP Address and Gateway.
-- **Speed test** while the popup is open: Download and Upload Speed, sampled continuously against [speed.cloudflare.com](https://speed.cloudflare.com). The speedometer button in the header pauses it.
+- **Speed test** while the popup is open: Download and Upload speed, sampled continuously against [speed.cloudflare.com](https://speed.cloudflare.com). The speedometer button in the header pauses it. If the server rate-limits, the cells show `rt. limit [last:19mbps]` with the last good result and the test waits a minute before trying again.
 - **DNS Provider**: DHCP, Cloudflare, Google or Custom, applied instantly to every Ethernet and Wi-Fi connection. No password, no root helper: it goes through NetworkManager, which lets the logged-in user change connection settings.
 - **Wi-Fi**: Known and Other networks with signal strength and a lock for secured ones. Click to connect or disconnect; hover a known network to forget it. Passwords are asked by KDE's own prompt, never passed on a command line.
 - **Panel icon** shows the connection type and Wi-Fi signal; hover for the IP address and DNS provider.
@@ -21,7 +21,7 @@ While it's **open**:
 
 - every 2 seconds, one small ping to your router and one to 1.1.1.1;
 - one Wi-Fi scan per opening;
-- the speed test, back to back with a 2-second pause: a download sample of at most 10 MB, then an upload sample of at most 2 MB, each about 3 seconds. This briefly fills your connection, which also raises the ping shown while it runs. Press the speedometer button to pause it.
+- the speed test, back to back with a 5-second pause: one download request of at most 10 MB, then one upload request of at most 2 MB, each about 3 seconds. This briefly fills your connection, which also raises the ping shown while it runs. Press the speedometer button to pause it.
 
 Closing the popup stops everything; a sample already in flight finishes within about 3 seconds.
 

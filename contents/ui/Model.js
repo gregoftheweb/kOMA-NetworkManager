@@ -74,6 +74,25 @@ function formatSpeed(mbps) {
     return (mbps < 10 ? mbps.toFixed(1) : Math.round(mbps)) + " Mbit/s"
 }
 
+// Value for a speed cell. `mbps` is the last good result (-1 if none);
+// `state` is how the latest sample went: "ok", "limited" (the server answered
+// 429) or "failed". A failed sample keeps showing the last good result.
+function speedText(mbps, testing, state) {
+    var have = mbps !== undefined && mbps !== null && mbps >= 0
+    if (state === "limited")
+        return "rt. limit [last:" + (have ? compactSpeed(mbps) : "—") + "]"
+    if (have)
+        return formatSpeed(mbps)
+    if (testing)
+        return "testing…"
+    return state === "failed" ? "unavailable" : "—"
+}
+
+// "19mbps", "1.5mbps" for the tight rate-limit label.
+function compactSpeed(mbps) {
+    return (mbps < 10 ? mbps.toFixed(1).replace(/\.0$/, "") : Math.round(mbps)) + "mbps"
+}
+
 // JSON.parse that returns null instead of throwing.
 function parseJson(text) {
     try {

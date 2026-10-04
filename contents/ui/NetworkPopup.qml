@@ -109,7 +109,7 @@ PlasmaExtras.Representation {
                 rowSpacing: Kirigami.Units.smallSpacing
 
                 Repeater {
-                    model: [["Ping", Model.formatLatency(popup.host.pingMs)], ["Packet Loss", popup.host.pingSamples.length ? popup.host.lossPercent + "%" : "—"], ["Receiving", Model.formatRate(popup.host.rxRate)], ["Sending", Model.formatRate(popup.host.txRate)], ["Downloaded", Model.formatBytes(popup.host.status.rxBytes)], ["Uploaded", Model.formatBytes(popup.host.status.txBytes)], ["Download Speed", popup.host.speedPhase === "down" && popup.host.speedDown < 0 ? "testing…" : Model.formatSpeed(popup.host.speedDown)], ["Upload Speed", popup.host.speedPhase === "up" && popup.host.speedUp < 0 ? "testing…" : Model.formatSpeed(popup.host.speedUp)], ["IP Address", popup.host.status.ip || "—"], ["Gateway", popup.host.status.gateway || "—"]]
+                    model: [["Ping", Model.formatLatency(popup.host.pingMs)], ["Packet Loss", popup.host.pingSamples.length ? popup.host.lossPercent + "%" : "—"], ["Receiving", Model.formatRate(popup.host.rxRate)], ["Sending", Model.formatRate(popup.host.txRate)], ["Downloaded", Model.formatBytes(popup.host.status.rxBytes)], ["Uploaded", Model.formatBytes(popup.host.status.txBytes)], ["Download", Model.speedText(popup.host.speedDown, popup.host.speedPhase === "down", popup.host.speedDownState)], ["Upload", Model.speedText(popup.host.speedUp, popup.host.speedPhase === "up", popup.host.speedUpState)], ["IP Address", popup.host.status.ip || "—"], ["Gateway", popup.host.status.gateway || "—"]]
                     delegate: RowLayout {
                         required property var modelData
                         Layout.columnSpan: 2
@@ -129,6 +129,17 @@ PlasmaExtras.Representation {
                 }
             }
 
+            PlasmaComponents.Label {  // why the speed test has no numbers
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.largeSpacing
+                Layout.rightMargin: Kirigami.Units.largeSpacing
+                Layout.topMargin: -Kirigami.Units.smallSpacing
+                visible: popup.host.speedNote.length > 0 && !popup.host.speedPaused
+                text: "Speed test: " + popup.host.speedNote
+                color: Kirigami.Theme.neutralTextColor
+                font: Kirigami.Theme.smallFont
+                wrapMode: Text.WordWrap
+            }
             PlasmaComponents.Label {
                 visible: popup.host.status.connected !== true
                 Layout.fillWidth: true

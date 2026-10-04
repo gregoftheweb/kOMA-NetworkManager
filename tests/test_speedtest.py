@@ -1,4 +1,7 @@
-"""The speed test's measuring loop, with a fake clock and fake transfers."""
+"""The speed test: one request per sample, bounded by bytes and time."""
+
+import io
+import urllib.error
 
 import pytest
 
@@ -11,62 +14,70 @@ class Clock:
         return self.now
 
 
-def link(clock, bytes_per_second, calls=None, stoppable=True):
-    """A fake link: moving `size` bytes advances the clock. A download stops at
-    the deadline; an upload (stoppable=False) always finishes its request."""
+def link(clock, bytes_per_second, *, drain=0.0):
+    """A fake single request: moves bytes until the cap or the deadline, then
+    (for an upload) takes `drain` seconds to empty the send buffer."""
 
-    def transfer(size, deadline):
-        if calls is not None:
-            calls.append(size)
-        seconds = size / bytes_per_second
-        if stoppable and clock.now + seconds > deadline:
-            size = int((deadline - clock.now) * bytes_per_second)
+    def transfer(max_bytes, deadline):
+        seconds = max_bytes / bytes_per_second
+        moved = max_bytes
+        if clock.now + seconds > deadline:
+            moved = int((deadline - clock.now) * bytes_per_second)
             seconds = deadline - clock.now
-        clock.now += seconds
-        return size
+        clock.now += seconds + drain
+        return moved
 
     return transfer
 
 
 def test_fast_link_stops_at_the_byte_cap(net):
     clock = Clock()
-    calls = []
-    r = net.measure(link(clock, 125_000_000, calls), 256_000, 5_000_000, 10_000_000, 3, clock=clock)  # 1 Gbit/s
-    assert r["bytes"] == 10_000_000
-    assert calls[0] == 256_000  # starts small
-    assert max(calls) <= 5_000_000
-    assert r["mbps"] == 1000.0
+    r = net.measure(link(clock, 125_000_000), 10_000_000, 3, clock=clock)  # 1 Gbit/s
+    assert (r["bytes"], r["mbps"], r["seconds"]) == (10_000_000, 1000.0, 0.08)
 
 
-def test_slow_link_stops_near_the_time_cap(net):
+def test_slow_link_stops_at_the_deadline(net):
     clock = Clock()
-    r = net.measure(link(clock, 250_000), 256_000, 5_000_000, 10_000_000, 3, clock=clock)  # 2 Mbit/s
-    assert r["seconds"] == 3
-    assert r["mbps"] == 2.0
+    r = net.measure(link(clock, 250_000), 10_000_000, 3, clock=clock)  # 2 Mbit/s
+    assert (r["seconds"], r["mbps"]) == (3, 2.0)
 
 
-def test_slow_upload_overruns_the_deadline_only_slightly(net):
+def test_upload_time_includes_draining_the_buffer(net):
     clock = Clock()
-    # 1.7 Mbit/s upload, the speed measured on the dev machine
-    r = net.measure(link(clock, 212_500, stoppable=False), 128_000, 1_000_000, 2_000_000, 3, clock=clock)
-    assert r["seconds"] <= 3 + net.CHUNK_SECONDS * 2
-    assert r["mbps"] == pytest.approx(1.7, abs=0.05)
-
-
-def test_chunks_never_pass_the_byte_cap(net):
-    clock = Clock()
-    calls = []
-    net.measure(link(clock, 1e12, calls), 30, 1000, 70, 10, clock=clock)
-    assert sum(calls) == 70
+    r = net.measure(link(clock, 212_500, drain=0.3), 2_000_000, 3, clock=clock)
+    assert r["seconds"] == 3.3
+    assert r["mbps"] == 1.5  # 637,500 bytes over 3.3 s
 
 
 def test_no_data_is_an_error(net):
     with pytest.raises(net.Failed, match="no data"):
-        net.measure(lambda size, deadline: 0, 10, 10, 100, 10, clock=Clock())
+        net.measure(lambda max_bytes, deadline: 0, 100, 10, clock=Clock())
+
+
+def test_one_request_per_sample(net, monkeypatch):
+    calls = []
+
+    def fake_urlopen(req, timeout):
+        calls.append(req.full_url)
+        return io.BytesIO(b"x" * 1000)
+
+    monkeypatch.setattr(net.urllib.request, "urlopen", fake_urlopen)
+    r = net.speedtest("down")
+    assert calls == [f"{net.SPEEDTEST_URL}/__down?bytes=10000000"]
+    assert r["bytes"] == 1000
+
+
+def test_rate_limit_is_its_own_error(net, monkeypatch):
+    def limited(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {}, None)
+
+    monkeypatch.setattr(net.urllib.request, "urlopen", limited)
+    with pytest.raises(net.RateLimited, match="rate limiting"):
+        net.speedtest("down")
 
 
 def test_network_errors_become_failures(net, monkeypatch):
-    def boom(size, deadline):
+    def boom(max_bytes, deadline):
         raise OSError("connection reset")
 
     monkeypatch.setattr(net, "_download", boom)
@@ -75,6 +86,5 @@ def test_network_errors_become_failures(net, monkeypatch):
 
 
 def test_limits_keep_the_sample_light(net):
-    down, up = net.SPEEDTEST_LIMITS["down"], net.SPEEDTEST_LIMITS["up"]
-    assert down[2] <= 10_000_000 and down[3] <= 3
-    assert up[2] <= 2_000_000 and up[3] <= 3
+    assert net.SPEEDTEST_LIMITS["down"] == (10_000_000, 3.0)
+    assert net.SPEEDTEST_LIMITS["up"][0] <= 2_000_000

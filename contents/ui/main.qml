@@ -29,10 +29,14 @@ PlasmoidItem {
     property real txRate: 0
     property var lastCounters: null      // {rx, tx, at} from the previous status read
     property string busy: ""             // what an action is running on ("dns", an SSID, ...)
-    property real speedDown: -1          // Mbit/s from the latest speed test sample
-    property real speedUp: -1
+    // last good speed test results (Mbit/s), kept in the widget's config
+    property real speedDown: Plasmoid.configuration.lastDownMbps
+    property real speedUp: Plasmoid.configuration.lastUpMbps
     property string speedPhase: ""       // "down" or "up" while a sample runs
     property bool speedPaused: false     // the header's speedometer button
+    property string speedNote: ""        // why the last sample failed (not for rate limits)
+    property string speedDownState: ""   // "ok" | "limited" | "failed" for the latest sample
+    property string speedUpState: ""
     property int speedRun: 0             // bumped on every open/close so stale runs stop
     property string message: ""
     property bool messageIsError: false
@@ -138,32 +142,56 @@ PlasmoidItem {
             speedPhase = ""
             return
         }
-        speedPhase = "down"
-        call(["speedtest", "down", "--json"], function (code, out) {
-            if (run !== root.speedRun)
-                return
-            var r = Model.parseJson(out)
-            root.speedDown = code === 0 && r ? r.mbps : -1
-            if (!root.expanded || root.speedPaused) {
-                root.speedPhase = ""
-                return
-            }
-            root.speedPhase = "up"
-            root.call(["speedtest", "up", "--json"], function (code2, out2) {
-                if (run !== root.speedRun)
-                    return
-                var r2 = Model.parseJson(out2)
-                root.speedUp = code2 === 0 && r2 ? r2.mbps : -1
-                root.speedPhase = ""
+        speedSample(run, "down", function () {
+            speedSample(run, "up", function () {
+                speedPhase = ""
+                speedGap.interval = 5000
                 speedGap.run = run
                 speedGap.restart()
             })
         })
     }
+    // One sample; on success stores Mbit/s, on failure -1 and the reason.
+    function speedSample(run, direction, next) {
+        if (run !== speedRun || !expanded || speedPaused) {
+            speedPhase = ""
+            return
+        }
+        speedPhase = direction
+        call(["speedtest", direction, "--json"], function (code, out, err) {
+            if (run !== root.speedRun)
+                return
+            var r = code === 0 ? Model.parseJson(out) : null
+            var state = r ? "ok" : (code === 3 ? "limited" : "failed");
+            // keep the last good result when a sample fails
+            if (direction === "down") {
+                root.speedDownState = state
+                if (r)
+                    Plasmoid.configuration.lastDownMbps = r.mbps
+            } else {
+                root.speedUpState = state
+                if (r)
+                    Plasmoid.configuration.lastUpMbps = r.mbps
+            }
+            root.speedNote = state === "failed" ? (err.trim().replace(/^komanet: /, "") || "speed test failed") : ""
+            if (state === "limited") {
+                // both directions use the same server
+                root.speedDownState = "limited"
+                root.speedUpState = "limited"
+                // the server wants a rest: skip the other direction, try again in a minute
+                root.speedPhase = ""
+                speedGap.interval = 60000
+                speedGap.run = run
+                speedGap.restart()
+                return
+            }
+            next()
+        })
+    }
     Timer {
         id: speedGap
         property int run: 0
-        interval: 2000
+        interval: 5000
         onTriggered: root.speedCycle(run)
     }
     onSpeedPausedChanged: if (!speedPaused)
