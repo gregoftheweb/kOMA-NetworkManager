@@ -29,6 +29,11 @@ PlasmoidItem {
     property real txRate: 0
     property var lastCounters: null      // {rx, tx, at} from the previous status read
     property string busy: ""             // what an action is running on ("dns", an SSID, ...)
+    property real speedDown: -1          // Mbit/s from the latest speed test sample
+    property real speedUp: -1
+    property string speedPhase: ""       // "down" or "up" while a sample runs
+    property bool speedPaused: false     // the header's speedometer button
+    property int speedRun: 0             // bumped on every open/close so stale runs stop
     property string message: ""
     property bool messageIsError: false
 
@@ -122,6 +127,48 @@ PlasmoidItem {
         })
     }
 
+    // Speed test: while the popup is open, a ~3 s download sample, then a ~3 s
+    // upload sample, then again after a short pause. Never while closed.
+    function startSpeedTests() {
+        speedRun += 1
+        speedCycle(speedRun)
+    }
+    function speedCycle(run) {
+        if (run !== speedRun || !expanded || speedPaused || !status.connected) {
+            speedPhase = ""
+            return
+        }
+        speedPhase = "down"
+        call(["speedtest", "down", "--json"], function (code, out) {
+            if (run !== root.speedRun)
+                return
+            var r = Model.parseJson(out)
+            root.speedDown = code === 0 && r ? r.mbps : -1
+            if (!root.expanded || root.speedPaused) {
+                root.speedPhase = ""
+                return
+            }
+            root.speedPhase = "up"
+            root.call(["speedtest", "up", "--json"], function (code2, out2) {
+                if (run !== root.speedRun)
+                    return
+                var r2 = Model.parseJson(out2)
+                root.speedUp = code2 === 0 && r2 ? r2.mbps : -1
+                root.speedPhase = ""
+                speedGap.run = run
+                speedGap.restart()
+            })
+        })
+    }
+    Timer {
+        id: speedGap
+        property int run: 0
+        interval: 2000
+        onTriggered: root.speedCycle(run)
+    }
+    onSpeedPausedChanged: if (!speedPaused)
+        startSpeedTests()
+
     // An action: shows a busy marker on `key`, then the CLI's one-line result.
     function act(key, args) {
         if (busy)
@@ -170,8 +217,13 @@ PlasmoidItem {
             lossPercent = 0
             refreshStatus()
             refreshPing()
-            refreshNetworks(true)
             // one fresh scan per opening
+            refreshNetworks(true)
+            startSpeedTests()
+        } else {
+            // let any sample in flight finish unseen
+            speedRun += 1
+            speedPhase = ""
         }
     }
 

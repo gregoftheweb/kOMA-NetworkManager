@@ -103,4 +103,12 @@ TestCase {
         verify(M.parseServers("8.8.8.8;reboot").error.length > 0)
         compare(M.parseServers("  ").error, "Enter at least one DNS server")
     }
+
+    function test_formatSpeed_and_parseJson() {
+        compare(M.formatSpeed(20.44), "20 Mbit/s")
+        compare(M.formatSpeed(1.54), "1.5 Mbit/s")
+        compare(M.formatSpeed(-1), "—")
+        compare(M.parseJson('{"mbps": 3}').mbps, 3)
+        compare(M.parseJson("not json"), null)
+    }
 }

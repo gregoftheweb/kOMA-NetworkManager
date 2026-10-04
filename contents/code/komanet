@@ -11,11 +11,14 @@
   komanet wifi disconnect                 disconnect Wi-Fi
   komanet wifi forget SSID                delete the saved network
   komanet wifi radio on|off               turn the Wi-Fi radio on or off
+  komanet speedtest down|up [--json]      measure download or upload speed against
+                                          speed.cloudflare.com (only when you ask)
 
 DNS is set on every Ethernet and Wi-Fi connection profile and re-applied to
 connected devices. NetworkManager's polkit rules normally allow that for the
 logged-in user, so no password or root helper is involved. Only `ping` and a
-Wi-Fi rescan send anything over the network.
+Wi-Fi rescan send anything over the network; `speedtest` samples at most 10 MB
+down or 2 MB up, for about 3 seconds.
 """
 
 import argparse
@@ -25,9 +28,16 @@ import os
 import re
 import subprocess
 import sys
+import time
+import urllib.request
 from pathlib import Path
 
 INTERNET_PROBE = "1.1.1.1"
+SPEEDTEST_URL = os.environ.get("KOMANET_SPEEDTEST_URL", "https://speed.cloudflare.com")
+# A light sample, since the panel runs it on open and every 2 minutes while open:
+# direction -> (first chunk, largest chunk, total byte cap, seconds cap)
+SPEEDTEST_LIMITS = {"down": (256_000, 5_000_000, 10_000_000, 3.0), "up": (128_000, 1_000_000, 2_000_000, 3.0)}
+CHUNK_SECONDS = 0.5  # later chunks are sized to take about this long at the measured rate
 SYSFS_NET = Path(os.environ.get("KOMANET_SYSFS", "/sys/class/net"))
 DNS_TYPES = ("802-3-ethernet", "802-11-wireless")  # connection types DNS is set on
 PROVIDERS = {
@@ -404,6 +414,68 @@ def wifi_radio(state):
     return f"Wi-Fi {state}"
 
 
+# ---- speed test --------------------------------------------------------------
+
+
+def measure(transfer, first_chunk, max_chunk, max_bytes, max_seconds, *, clock=time.monotonic):
+    """Run transfer(size, deadline) -> bytes moved, chunk by chunk, until the
+    byte or time cap; return the throughput. The first chunk is small; later
+    ones are sized from the rate so far to take about CHUNK_SECONDS, so an
+    upload (which can't stop mid-request) overruns the deadline only slightly.
+    transfer may stop early at the deadline; returning 0 ends the test."""
+    start = clock()
+    deadline = start + max_seconds
+    total, size = 0, first_chunk
+    while total < max_bytes and clock() < deadline:
+        moved = transfer(min(size, max_bytes - total), deadline)
+        if moved <= 0:
+            break
+        total += moved
+        elapsed = max(clock() - start, 1e-9)
+        size = int(min(max_chunk, max(first_chunk, total / elapsed * CHUNK_SECONDS)))
+    seconds = max(clock() - start, 1e-9)
+    if total == 0:
+        raise Failed("the speed test moved no data")
+    return {"bytes": total, "seconds": round(seconds, 2), "mbps": round(total * 8 / seconds / 1e6, 1)}
+
+
+def _download(size, deadline):
+    req = urllib.request.Request(f"{SPEEDTEST_URL}/__down?bytes={size}", headers={"User-Agent": "komanet"})
+    got = 0
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        while time.monotonic() < deadline:
+            block = resp.read(65536)
+            if not block:
+                break
+            got += len(block)
+    return got
+
+
+def _upload(size, deadline):
+    if time.monotonic() >= deadline:
+        return 0
+    req = urllib.request.Request(
+        f"{SPEEDTEST_URL}/__up",
+        data=b"0" * size,
+        method="POST",
+        headers={"User-Agent": "komanet", "Content-Type": "application/octet-stream"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        resp.read()
+    return size
+
+
+def speedtest(direction):
+    first, largest, max_bytes, max_seconds = SPEEDTEST_LIMITS[direction]
+    transfer = _download if direction == "down" else _upload
+    try:
+        result = measure(transfer, first, largest, max_bytes, max_seconds)
+    except OSError as e:  # URLError, timeouts, resets
+        raise Failed(f"speed test failed: {getattr(e, 'reason', e)}") from e
+    result["direction"] = direction
+    return result
+
+
 # ---- command line --------------------------------------------------------------
 
 
@@ -450,6 +522,9 @@ def main():
         wsub.add_parser(name).add_argument("ssid")
     wsub.add_parser("disconnect")
     wsub.add_parser("radio").add_argument("state", choices=["on", "off"])
+    sp = sub.add_parser("speedtest")
+    sp.add_argument("direction", choices=["down", "up"])
+    sp.add_argument("--json", action="store_true")
     a = ap.parse_args()
 
     try:
@@ -465,6 +540,11 @@ def main():
             d = current_dns()
             servers = ", ".join(d["servers"]) or "from the network"
             print(json.dumps(d)) if a.json else print(f"{d['provider']}: {servers}")
+        elif a.cmd == "speedtest":
+            r = speedtest(a.direction)
+            word = "Download" if a.direction == "down" else "Upload"
+            moved = human_bytes(r["bytes"])
+            print(json.dumps(r)) if a.json else print(f"{word}: {r['mbps']} Mbit/s ({moved} in {r['seconds']} s)")
         elif a.cmd == "wifi":
             if a.action == "list":
                 nets = wifi_networks(a.rescan)

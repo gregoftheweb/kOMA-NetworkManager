@@ -68,6 +68,21 @@ function formatRate(bytesPerSecond) {
     return formatBytes(bytesPerSecond) + "/s"
 }
 
+function formatSpeed(mbps) {
+    if (mbps === undefined || mbps === null || mbps < 0)
+        return "—"
+    return (mbps < 10 ? mbps.toFixed(1) : Math.round(mbps)) + " Mbit/s"
+}
+
+// JSON.parse that returns null instead of throwing.
+function parseJson(text) {
+    try {
+        return JSON.parse(text)
+    } catch (e) {
+        return null
+    }
+}
+
 function formatLatency(ms) {
     if (ms === undefined || ms === null || ms < 0)
         return "—"

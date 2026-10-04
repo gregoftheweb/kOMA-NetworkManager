@@ -24,7 +24,10 @@ PlasmaExtras.Representation {
     Layout.minimumWidth: Kirigami.Units.gridUnit * 22
     Layout.preferredWidth: Kirigami.Units.gridUnit * 24
     // fit the content (short without Wi-Fi), up to a scrolling maximum
-    readonly property real fitHeight: Math.min(content.implicitHeight + (popup.header ? popup.header.implicitHeight : 0) + Kirigami.Units.largeSpacing * 2, Kirigami.Units.gridUnit * 30)
+    readonly property real fitHeight: Math.min(content.implicitHeight + (popup.header ? popup.header.implicitHeight : 0) + Kirigami.Units.largeSpacing * 2 + Kirigami.Units.gridUnit, Kirigami.Units.gridUnit * 30)
+    // min = max = content height: a fixed-height popup, so Plasma doesn't
+    // restore a stale saved popupHeight from an earlier opening
+    Layout.minimumHeight: fitHeight
     Layout.preferredHeight: fitHeight
     Layout.maximumHeight: fitHeight
     collapseMarginsHint: true
@@ -43,6 +46,15 @@ PlasmaExtras.Representation {
                 level: 2
                 text: Model.connectionTitle(popup.host.status)
                 elide: Text.ElideRight
+            }
+            PlasmaComponents.ToolButton {
+                icon.name: "speedometer"
+                checkable: true
+                checked: !popup.host.speedPaused
+                onToggled: popup.host.speedPaused = !checked
+                PlasmaComponents.ToolTip {
+                    text: popup.host.speedPaused ? "Speed test paused" : "Speed test runs while this is open"
+                }
             }
             PlasmaComponents.Switch {
                 visible: popup.host.hasWifi
@@ -97,7 +109,7 @@ PlasmaExtras.Representation {
                 rowSpacing: Kirigami.Units.smallSpacing
 
                 Repeater {
-                    model: [["Ping", Model.formatLatency(popup.host.pingMs)], ["Packet Loss", popup.host.pingSamples.length ? popup.host.lossPercent + "%" : "—"], ["Receiving", Model.formatRate(popup.host.rxRate)], ["Sending", Model.formatRate(popup.host.txRate)], ["Downloaded", Model.formatBytes(popup.host.status.rxBytes)], ["Uploaded", Model.formatBytes(popup.host.status.txBytes)], ["IP Address", popup.host.status.ip || "—"], ["Gateway", popup.host.status.gateway || "—"]]
+                    model: [["Ping", Model.formatLatency(popup.host.pingMs)], ["Packet Loss", popup.host.pingSamples.length ? popup.host.lossPercent + "%" : "—"], ["Receiving", Model.formatRate(popup.host.rxRate)], ["Sending", Model.formatRate(popup.host.txRate)], ["Downloaded", Model.formatBytes(popup.host.status.rxBytes)], ["Uploaded", Model.formatBytes(popup.host.status.txBytes)], ["Download Speed", popup.host.speedPhase === "down" && popup.host.speedDown < 0 ? "testing…" : Model.formatSpeed(popup.host.speedDown)], ["Upload Speed", popup.host.speedPhase === "up" && popup.host.speedUp < 0 ? "testing…" : Model.formatSpeed(popup.host.speedUp)], ["IP Address", popup.host.status.ip || "—"], ["Gateway", popup.host.status.gateway || "—"]]
                     delegate: RowLayout {
                         required property var modelData
                         Layout.columnSpan: 2
