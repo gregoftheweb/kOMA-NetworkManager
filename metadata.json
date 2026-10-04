@@ -1,0 +1,14 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Authors": [{ "Name": "Columbia Foundry", "Email": "" }],
+    "Category": "System Information",
+    "Description": "Omarchy-style network panel: live link stats, one-click DNS provider switching, and Wi-Fi networks",
+    "Icon": "network-wired",
+    "Id": "com.columbiafoundry.komanetworkmanager",
+    "License": "MIT",
+    "Name": "kOMA Network Manager",
+    "Version": "0.1"
+  },
+  "X-Plasma-API-Minimum-Version": "6.0"
+}

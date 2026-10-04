@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Reinstall kOMA Network Manager from this folder and restart plasmashell.
+set -e
+"$(dirname "$0")/install" --no-place
+systemctl --user restart plasma-plasmashell.service

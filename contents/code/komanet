@@ -1,0 +1,491 @@
+#!/usr/bin/env python3
+"""komanet — the backend of kOMA Network Manager (NetworkManager via nmcli).
+
+  komanet status [--json]                 the primary connection: device, link speed,
+                                          IP, gateway, traffic counters, DNS, Wi-Fi radio
+  komanet ping [--json]                   one ping to the gateway and one to 1.1.1.1
+  komanet dns [--json]                    current DNS provider and servers
+  komanet dns set PROVIDER [SERVER...]    dhcp | cloudflare | google | custom SERVER...
+  komanet wifi list [--json] [--rescan]   known and other Wi-Fi networks
+  komanet wifi connect SSID               connect (KDE's password prompt asks for secrets)
+  komanet wifi disconnect                 disconnect Wi-Fi
+  komanet wifi forget SSID                delete the saved network
+  komanet wifi radio on|off               turn the Wi-Fi radio on or off
+
+DNS is set on every Ethernet and Wi-Fi connection profile and re-applied to
+connected devices. NetworkManager's polkit rules normally allow that for the
+logged-in user, so no password or root helper is involved. Only `ping` and a
+Wi-Fi rescan send anything over the network.
+"""
+
+import argparse
+import ipaddress
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+INTERNET_PROBE = "1.1.1.1"
+SYSFS_NET = Path(os.environ.get("KOMANET_SYSFS", "/sys/class/net"))
+DNS_TYPES = ("802-3-ethernet", "802-11-wireless")  # connection types DNS is set on
+PROVIDERS = {
+    "cloudflare": {
+        "name": "Cloudflare",
+        "ipv4": ["1.1.1.1", "1.0.0.1"],
+        "ipv6": ["2606:4700:4700::1111", "2606:4700:4700::1001"],
+    },
+    "google": {
+        "name": "Google",
+        "ipv4": ["8.8.8.8", "8.8.4.4"],
+        "ipv6": ["2001:4860:4860::8888", "2001:4860:4860::8844"],
+    },
+}
+
+
+class Failed(Exception):
+    pass
+
+
+# ---- running nmcli -----------------------------------------------------------
+
+
+def run(cmd, timeout=15, stdin=None):
+    """Run a command; return (returncode, stdout, stderr). Tests replace this."""
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, input=stdin, check=False)
+    except FileNotFoundError:
+        return 127, "", f"{cmd[0]}: not found"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"{cmd[0]}: timed out"
+    return p.returncode, p.stdout, p.stderr
+
+
+def nmcli(*args, check=True):
+    rc, out, err = run(["nmcli", *args])
+    if check and rc != 0:
+        raise Failed((err or out).strip().removeprefix("Error: ") or f"nmcli {args[0]} failed")
+    return out
+
+
+def split_terse(line):
+    """Split one line of `nmcli -t` output on unescaped ':' and unescape it."""
+    fields, cur, i = [], [], 0
+    while i < len(line):
+        c = line[i]
+        if c == "\\" and i + 1 < len(line):
+            cur.append(line[i + 1])
+            i += 2
+            continue
+        if c == ":":
+            fields.append("".join(cur))
+            cur = []
+        else:
+            cur.append(c)
+        i += 1
+    fields.append("".join(cur))
+    return fields
+
+
+def parse_fields(text):
+    """`nmcli -t -f A,B device show` style output: one KEY:VALUE per line.
+    Indexed keys (IP4.ADDRESS[1], [2], ...) are collected into lists."""
+    out = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        m = re.fullmatch(r"(.+)\[\d+\]", key)
+        if m:
+            out.setdefault(m.group(1), []).append(value)
+        else:
+            out[key] = value
+    return out
+
+
+def parse_rows(text, names):
+    return [dict(zip(names, split_terse(line), strict=False)) for line in text.splitlines() if line.strip()]
+
+
+# ---- status ----------------------------------------------------------------
+
+
+def read_sysfs(dev, name):
+    try:
+        return (SYSFS_NET / dev / name).read_text().strip()
+    except OSError:
+        return None
+
+
+def link_speed_label(mbps):
+    """1000 -> '1gbit', 2500 -> '2.5gbit', 100 -> '100mbit' (as Omarchy shows it)."""
+    if not mbps or mbps <= 0:
+        return ""
+    if mbps >= 1000:
+        g = mbps / 1000
+        return f"{g:g}gbit"
+    return f"{mbps}mbit"
+
+
+def default_route_device():
+    rc, out, _ = run(["ip", "-j", "route", "show", "default"])
+    if rc != 0:
+        return None
+    try:
+        routes = json.loads(out or "[]")
+    except ValueError:
+        return None
+    routes.sort(key=lambda r: r.get("metric", 0))
+    return routes[0].get("dev") if routes else None
+
+
+def primary_device():
+    """The device carrying the default route, else the first connected
+    Ethernet or Wi-Fi device."""
+    rows = parse_rows(
+        nmcli("-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"), ["device", "type", "state", "connection"]
+    )
+    usable = [r for r in rows if r["type"] in ("ethernet", "wifi") and r["state"] == "connected"]
+    via_route = default_route_device()
+    for r in usable:
+        if r["device"] == via_route:
+            return r, rows
+    return (usable[0] if usable else None), rows
+
+
+def classify_dns(ignore_auto, servers):
+    """Provider name for a connection's DNS settings."""
+    if not ignore_auto or not servers:
+        return "DHCP"
+    plain = {s.split("#")[0] for s in servers}
+    for p in PROVIDERS.values():
+        if plain and plain <= set(p["ipv4"] + p["ipv6"]):
+            return p["name"]
+    return "Custom"
+
+
+def connection_dns(uuid):
+    f = parse_fields(
+        nmcli("-t", "-f", "ipv4.dns,ipv4.ignore-auto-dns,ipv6.dns,ipv6.ignore-auto-dns", "connection", "show", uuid)
+    )
+    servers = [s for s in (f.get("ipv4.dns", "") + "," + f.get("ipv6.dns", "")).split(",") if s]
+    ignore = f.get("ipv4.ignore-auto-dns") == "yes"
+    return {"provider": classify_dns(ignore, servers), "servers": servers}
+
+
+def status():
+    dev, rows = primary_device()
+    wifi_dev = next((r["device"] for r in rows if r["type"] == "wifi"), None)
+    radio = nmcli("radio", "wifi", check=False).strip() if wifi_dev else ""
+    result = {"connected": dev is not None, "wifiDevice": wifi_dev, "wifiEnabled": radio == "enabled"}
+    if not dev:
+        return result
+    d = parse_fields(
+        nmcli("-t", "-f", "GENERAL.CON-UUID,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS", "device", "show", dev["device"])
+    )
+    addr = (d.get("IP4.ADDRESS") or [""])[0]
+    ip, _, prefix = addr.partition("/")
+    speed = read_sysfs(dev["device"], "speed")
+    speed = int(speed) if speed and speed.lstrip("-").isdigit() else 0
+    result.update(
+        {
+            "device": dev["device"],
+            "type": dev["type"],
+            "connection": dev["connection"],
+            "uuid": d.get("GENERAL.CON-UUID", ""),
+            "ip": ip,
+            "prefix": int(prefix) if prefix.isdigit() else None,
+            "gateway": d.get("IP4.GATEWAY", ""),
+            "speedMbps": speed,
+            "speedLabel": link_speed_label(speed),
+            "rxBytes": int(read_sysfs(dev["device"], "statistics/rx_bytes") or 0),
+            "txBytes": int(read_sysfs(dev["device"], "statistics/tx_bytes") or 0),
+            "activeDns": d.get("IP4.DNS", []),
+        }
+    )
+    if dev["type"] == "wifi":
+        active = next((n for n in wifi_networks(rescan=False) if n["active"]), None)
+        if active:
+            result.update({"ssid": active["ssid"], "signal": active["signal"]})
+    if result["uuid"]:
+        result["dns"] = connection_dns(result["uuid"])
+    return result
+
+
+# ---- ping --------------------------------------------------------------------
+
+
+def ping_ms(host):
+    if not host:
+        return None
+    rc, out, _ = run(["ping", "-n", "-c", "1", "-W", "1", host], timeout=3)
+    if rc != 0:
+        return None
+    m = re.search(r"time[=<]([\d.]+)", out)
+    return float(m.group(1)) if m else None
+
+
+def ping(gateway=None):
+    if gateway is None:
+        dev, _ = primary_device()
+        if dev:
+            gateway = parse_fields(nmcli("-t", "-f", "IP4.GATEWAY", "device", "show", dev["device"])).get(
+                "IP4.GATEWAY", ""
+            )
+    return {"router": ping_ms(gateway), "internet": ping_ms(INTERNET_PROBE)}
+
+
+# ---- DNS ---------------------------------------------------------------------
+
+
+def parse_servers(values):
+    """Validate custom servers: IPv4/IPv6 addresses, comma or space separated."""
+    out = []
+    for v in values:
+        for s in re.split(r"[,\s]+", v.strip()):
+            if not s:
+                continue
+            try:
+                out.append(str(ipaddress.ip_address(s)))
+            except ValueError as e:
+                raise Failed(f"not an IP address: {s}") from e
+    if not out:
+        raise Failed("give at least one DNS server")
+    return out
+
+
+def current_dns():
+    """DNS settings of the primary connection's profile."""
+    dev, _ = primary_device()
+    if not dev:
+        return {"provider": "DHCP", "servers": []}
+    uuid = parse_fields(nmcli("-t", "-f", "GENERAL.CON-UUID", "device", "show", dev["device"])).get("GENERAL.CON-UUID")
+    return connection_dns(uuid) if uuid else {"provider": "DHCP", "servers": []}
+
+
+def resolved_active():
+    rc, out, _ = run(["systemctl", "is-active", "systemd-resolved"])
+    return rc == 0 and out.strip() == "active"
+
+
+def cap_servers(v4, v6, limit=3):
+    """Without systemd-resolved, NetworkManager writes /etc/resolv.conf and
+    glibc reads only the first 3 nameservers: keep IPv4 first, then IPv6."""
+    v4 = v4[:limit]
+    return v4, v6[: max(0, limit - len(v4))]
+
+
+def dns_profiles():
+    rows = parse_rows(nmcli("-t", "-f", "UUID,TYPE", "connection", "show"), ["uuid", "type"])
+    return [r["uuid"] for r in rows if r["type"] in DNS_TYPES]
+
+
+def set_dns(provider, servers=()):
+    key = provider.lower()
+    if key == "dhcp":
+        v4, v6, ignore = [], [], "no"
+    elif key in PROVIDERS:
+        v4, v6, ignore = PROVIDERS[key]["ipv4"], PROVIDERS[key]["ipv6"], "yes"
+    elif key == "custom":
+        addrs = parse_servers(servers)
+        v4 = [a for a in addrs if ":" not in a]
+        v6 = [a for a in addrs if ":" in a]
+        ignore = "yes"
+    else:
+        raise Failed(f"unknown DNS provider {provider!r} (dhcp, cloudflare, google, custom)")
+    if not resolved_active():
+        v4, v6 = cap_servers(list(v4), list(v6))
+    profiles = dns_profiles()
+    if not profiles:
+        raise Failed("no Ethernet or Wi-Fi connections to set DNS on")
+    for uuid in profiles:
+        nmcli(
+            "connection",
+            "modify",
+            uuid,
+            "ipv4.ignore-auto-dns",
+            ignore,
+            "ipv4.dns",
+            " ".join(v4),
+            "ipv6.ignore-auto-dns",
+            ignore if v6 or key == "dhcp" else "no",
+            "ipv6.dns",
+            " ".join(v6),
+        )
+    # push the new settings to what's connected right now
+    for r in parse_rows(nmcli("-t", "-f", "DEVICE,TYPE,STATE", "device", "status"), ["device", "type", "state"]):
+        if r["type"] in ("ethernet", "wifi") and r["state"] == "connected":
+            nmcli("device", "reapply", r["device"], check=False)
+    name = PROVIDERS.get(key, {}).get("name") or ("DHCP" if key == "dhcp" else "Custom")
+    shown = ", ".join(v4 + v6) or "from the network"
+    return f"DNS: {name} ({shown}) on {len(profiles)} connection(s)"
+
+
+# ---- Wi-Fi -------------------------------------------------------------------
+
+
+def saved_wifi_ssids():
+    rows = parse_rows(nmcli("-t", "-f", "NAME,UUID,TYPE", "connection", "show"), ["name", "uuid", "type"])
+    ssids = {}
+    for r in rows:
+        if r["type"] == "802-11-wireless":
+            f = parse_fields(nmcli("-t", "-f", "802-11-wireless.ssid", "connection", "show", r["uuid"], check=False))
+            ssids[f.get("802-11-wireless.ssid") or r["name"]] = r["uuid"]
+    return ssids
+
+
+def wifi_networks(rescan=False):
+    """Networks in range, strongest first, one row per SSID, known ones flagged."""
+    out = nmcli(
+        "-t",
+        "-f",
+        "IN-USE,SSID,SIGNAL,SECURITY",
+        "device",
+        "wifi",
+        "list",
+        "--rescan",
+        "yes" if rescan else "no",
+        check=False,
+    )
+    best = {}
+    for r in parse_rows(out, ["inuse", "ssid", "signal", "security"]):
+        ssid = r["ssid"]
+        if not ssid:
+            continue  # hidden networks
+        signal = int(r["signal"]) if r["signal"].isdigit() else 0
+        cur = best.get(ssid)
+        active = r["inuse"] == "*"
+        if cur is None or signal > cur["signal"] or active:
+            best[ssid] = {
+                "ssid": ssid,
+                "signal": signal,
+                "secure": bool(r["security"].strip() and r["security"].strip() != "--"),
+                "active": active or bool(cur and cur["active"]),
+            }
+    known = saved_wifi_ssids() if best else {}
+    nets = list(best.values())
+    for n in nets:
+        n["known"] = n["ssid"] in known
+    nets.sort(key=lambda n: (not n["active"], not n["known"], -n["signal"], n["ssid"].lower()))
+    return nets
+
+
+def wifi_connect(ssid):
+    known = saved_wifi_ssids()
+    if ssid in known:
+        nmcli("connection", "up", known[ssid])
+    else:
+        # no password on the command line: NetworkManager asks the session's secret
+        # agent (KDE's, from plasma-nm) to prompt for it
+        nmcli("device", "wifi", "connect", ssid)
+    return f"connected to {ssid}"
+
+
+def wifi_disconnect():
+    _, rows = primary_device()
+    dev = next((r["device"] for r in rows if r["type"] == "wifi" and r["state"] == "connected"), None)
+    if not dev:
+        raise Failed("Wi-Fi is not connected")
+    nmcli("device", "disconnect", dev)
+    return "Wi-Fi disconnected"
+
+
+def wifi_forget(ssid):
+    known = saved_wifi_ssids()
+    if ssid not in known:
+        raise Failed(f"{ssid} is not a saved network")
+    nmcli("connection", "delete", known[ssid])
+    return f"forgot {ssid}"
+
+
+def wifi_radio(state):
+    nmcli("radio", "wifi", state)
+    return f"Wi-Fi {state}"
+
+
+# ---- command line --------------------------------------------------------------
+
+
+def human_bytes(n):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def print_status(s):
+    if not s["connected"]:
+        print("Not connected")
+        return
+    title = s.get("ssid") or s["connection"]
+    print(f"{title} ({s['type']}{', ' + s['speedLabel'] if s['speedLabel'] else ''}) on {s['device']}")
+    print(f"  IP address  {s['ip']}/{s['prefix']}")
+    print(f"  Gateway     {s['gateway']}")
+    print(f"  Downloaded  {human_bytes(s['rxBytes'])}")
+    print(f"  Uploaded    {human_bytes(s['txBytes'])}")
+    if s.get("dns"):
+        print(f"  DNS         {s['dns']['provider']} ({', '.join(s['dns']['servers']) or 'from the network'})")
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="komanet", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for name in ("status", "ping"):
+        sp = sub.add_parser(name)
+        sp.add_argument("--json", action="store_true")
+    sp = sub.add_parser("dns")
+    sp.add_argument("--json", action="store_true")
+    dsub = sp.add_subparsers(dest="action")
+    ds = dsub.add_parser("set")
+    ds.add_argument("provider")
+    ds.add_argument("servers", nargs="*")
+    sp = sub.add_parser("wifi")
+    wsub = sp.add_subparsers(dest="action", required=True)
+    wl = wsub.add_parser("list")
+    wl.add_argument("--json", action="store_true")
+    wl.add_argument("--rescan", action="store_true")
+    for name in ("connect", "forget"):
+        wsub.add_parser(name).add_argument("ssid")
+    wsub.add_parser("disconnect")
+    wsub.add_parser("radio").add_argument("state", choices=["on", "off"])
+    a = ap.parse_args()
+
+    try:
+        if a.cmd == "status":
+            s = status()
+            print(json.dumps(s)) if a.json else print_status(s)
+        elif a.cmd == "ping":
+            p = ping()
+            print(json.dumps(p)) if a.json else print(f"router {p['router']} ms, internet {p['internet']} ms")
+        elif a.cmd == "dns" and a.action == "set":
+            print(set_dns(a.provider, a.servers))
+        elif a.cmd == "dns":
+            d = current_dns()
+            servers = ", ".join(d["servers"]) or "from the network"
+            print(json.dumps(d)) if a.json else print(f"{d['provider']}: {servers}")
+        elif a.cmd == "wifi":
+            if a.action == "list":
+                nets = wifi_networks(a.rescan)
+                if a.json:
+                    print(json.dumps(nets))
+                else:
+                    for n in nets:
+                        mark = "*" if n["active"] else ("k" if n["known"] else " ")
+                        print(f"{mark} {n['signal']:>3}% {'🔒' if n['secure'] else '  '} {n['ssid']}")
+            elif a.action == "connect":
+                print(wifi_connect(a.ssid))
+            elif a.action == "disconnect":
+                print(wifi_disconnect())
+            elif a.action == "forget":
+                print(wifi_forget(a.ssid))
+            else:
+                print(wifi_radio(a.state))
+    except Failed as e:
+        print(f"komanet: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

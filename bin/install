@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Install/upgrade kOMA Network Manager, link the komanet CLI, and place the
+# widget on every panel left of the system tray. Safe to re-run: panels that
+# already have it are left alone; the panel config is backed up first.
+#   install            install + place on panels (panels restart for a moment)
+#   install --no-place install/upgrade only
+set -euo pipefail
+dir=$(cd "$(dirname "$0")/.." && pwd)
+id=com.columbiafoundry.komanetworkmanager
+kpackagetool6 --type Plasma/Applet --upgrade "$dir" >/dev/null 2>&1 ||
+  kpackagetool6 --type Plasma/Applet --install "$dir"
+mkdir -p "$HOME/.local/bin"
+ln -sf "$dir/contents/code/komanet" "$HOME/.local/bin/komanet"
+echo "kOMA Network Manager installed; CLI linked at ~/.local/bin/komanet"
+[[ "${1:-}" == "--no-place" ]] && exit 0
+
+# Add the widget live, then write each panel's order while plasmashell is
+# stopped: a running shell keeps its in-memory order and saves it on exit.
+plan=$(qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "
+var ID = '$id';
+panels().forEach(function (p) {
+  if (p.widgets().some(function (w) { return w.type === ID; })) return;
+  p.currentConfigGroup = ['General'];
+  var order = String(p.readConfig('AppletOrder') || '').split(';').filter(String);
+  if (!order.length) order = p.widgets().map(function (w) { return String(w.id); });
+  var tray = p.widgets().filter(function (w) { return w.type === 'org.kde.plasma.systemtray'; })[0];
+  var w = p.addWidget(ID);
+  var at = tray ? order.indexOf(String(tray.id)) : -1;
+  if (at < 0) order.push(String(w.id)); else order.splice(at, 0, String(w.id));
+  print(p.id + ' ' + order.join(';') + '\n');
+});
+")
+if [[ -z "$plan" ]]; then
+  echo "already on every panel"
+  exit 0
+fi
+cfg="${XDG_CONFIG_HOME:-$HOME/.config}/plasma-org.kde.plasma.desktop-appletsrc"
+cp -a "$cfg" "$cfg.bak-$(date +%Y%m%d-%H%M%S)"
+systemctl --user stop plasma-plasmashell.service
+while read -r panel order; do
+  [[ -n "$panel" ]] && kwriteconfig6 --file plasma-org.kde.plasma.desktop-appletsrc \
+    --group Containments --group "$panel" --group General --key AppletOrder "$order"
+done <<<"$plan"
+systemctl --user start plasma-plasmashell.service
+echo "placed on $(grep -c . <<<"$plan") panel(s), left of the system tray"
