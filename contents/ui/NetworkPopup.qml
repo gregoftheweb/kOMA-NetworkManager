@@ -169,6 +169,7 @@ PlasmaExtras.Representation {
                         text: modelData
                         checkable: true
                         checked: current || (modelData === "Custom" && popup.customOpen)
+                        font.bold: current
                         enabled: popup.host.busy === "" && popup.host.status.connected === true
                         onClicked: {
                             if (dnsButton.modelData === "Custom") {
@@ -178,6 +179,15 @@ PlasmaExtras.Representation {
                             }
                             popup.customOpen = false
                             popup.host.act("dns", ["dns", "set", dnsButton.modelData.toLowerCase()])
+                        }
+                        // the selected provider gets a border in the theme's highlight color
+                        Rectangle {
+                            anchors.fill: parent
+                            visible: dnsButton.current
+                            color: "transparent"
+                            radius: Kirigami.Units.cornerRadius
+                            border.width: 2
+                            border.color: Kirigami.Theme.highlightColor
                         }
                         PlasmaComponents.BusyIndicator {
                             anchors {

@@ -103,6 +103,10 @@ PlasmoidItem {
     }
 
     function refreshPing() {
+        // a running speed sample fills the line, so a ping now would measure the
+        // test's own queueing; ping and packet loss describe the network at rest
+        if (speedPhase !== "")
+            return
         call(["ping", "--json"], function (code, out) {
             if (code !== 0)
                 return
