@@ -17,4 +17,4 @@ All notable changes to kOMA Network Manager. The format follows [Keep a Changelo
 - `komanet` CLI: `status`, `ping`, `dns`, `dns set`, `wifi list|connect|disconnect|forget|radio`, `speedtest`.
 - Tests (pytest against recorded nmcli output, QML unit tests), linting and formatting gates (`make check`), pre-commit hook, `make package`.
 
-[0.1.0]: https://github.com/columbiafoundry/kOMA-NetworkManager/releases/tag/v0.1.0
+[0.1.0]: https://github.com/gregoftheweb/kOMA-NetworkManager/releases/tag/v0.1.0

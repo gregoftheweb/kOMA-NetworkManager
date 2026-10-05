@@ -36,12 +36,12 @@ DNS changes need NetworkManager's `settings.modify.system` permission for your u
 
 ## Install
 
-From the KDE Store: right-click the panel, **Add or Manage Widgets**, **Get New Widgets**, and search for "kOMA Network Manager".
+KDE Store publication is planned. Install the release `.plasmoid` through **Add or Manage Widgets → Install Widget From Local File**, or with `kpackagetool6 --type Plasma/Applet --install <file.plasmoid>`. Then add kOMA Network Manager to a panel.
 
 From source:
 
 ```sh
-git clone https://github.com/columbiafoundry/kOMA-NetworkManager
+git clone https://github.com/gregoftheweb/kOMA-NetworkManager
 cd kOMA-NetworkManager
 bin/install              # the widget, the komanet command in ~/.local/bin, and places it on your panels
 bin/install --no-place   # the same, without touching your panels
