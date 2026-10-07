@@ -12,7 +12,6 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import org.kde.kirigami as Kirigami
 import org.kde.plasma.plasmoid
-import org.kde.plasma.plasma5support as P5Support
 import "Model.js" as Model
 
 PlasmoidItem {
@@ -54,32 +53,24 @@ PlasmoidItem {
     }
 
     // ---------------------------------------------------------------- CLI calls
-    property var callbacks: ({})
+    function command(args) {
+        return "python3 " + shellQuote(cli) + " " + args.map(shellQuote).join(" ")
+    }
     function call(args, callback) {
-        var source = "python3 " + shellQuote(cli) + " " + args.map(shellQuote).join(" ") + " # " + Date.now() + Math.random()
-        var cbs = callbacks
-        cbs[source] = callback
-        callbacks = cbs
-        runner.connectSource(source)
+        commands.run(command(args), callback)
+    }
+    // for polls: skip a tick rather than queue behind a slow run
+    function poll(args, callback) {
+        if (!commands.busy(command(args)))
+            call(args, callback)
     }
 
-    P5Support.DataSource {
-        id: runner
-        engine: "executable"
-        connectedSources: []
-        onNewData: function (source, data) {
-            disconnectSource(source)
-            var cb = root.callbacks[source]
-            var cbs = root.callbacks
-            delete cbs[source]
-            root.callbacks = cbs
-            if (cb)
-                cb(data["exit code"], String(data.stdout || ""), String(data.stderr || ""))
-        }
+    CommandQueue {
+        id: commands
     }
 
     function refreshStatus() {
-        call(["status", "--json"], function (code, out) {
+        poll(["status", "--json"], function (code, out) {
             if (code !== 0)
                 return
             try {
@@ -107,7 +98,7 @@ PlasmoidItem {
         // test's own queueing; ping and packet loss describe the network at rest
         if (speedPhase !== "")
             return
-        call(["ping", "--json"], function (code, out) {
+        poll(["ping", "--json"], function (code, out) {
             if (code !== 0)
                 return
             try {
@@ -126,7 +117,7 @@ PlasmoidItem {
             networks = []
             return
         }
-        call(rescan ? ["wifi", "list", "--json", "--rescan"] : ["wifi", "list", "--json"], function (code, out) {
+        poll(rescan ? ["wifi", "list", "--json", "--rescan"] : ["wifi", "list", "--json"], function (code, out) {
             if (code === 0) {
                 try {
                     networks = JSON.parse(out)
