@@ -7,8 +7,13 @@
 set -euo pipefail
 dir=$(cd "$(dirname "$0")/.." && pwd)
 id=com.columbiafoundry.komanetworkmanager
-kpackagetool6 --type Plasma/Applet --upgrade "$dir" >/dev/null 2>&1 ||
-  kpackagetool6 --type Plasma/Applet --install "$dir"
+# install only what `make package` ships (plus files not yet committed), never dev tooling
+pkg=$(mktemp -d)
+trap 'rm -rf "$pkg"' EXIT
+(cd "$dir" && git ls-files -z --cached --others --exclude-standard -- metadata.json contents LICENSE |
+  while IFS= read -r -d "" f; do if [ -e "$f" ]; then cp --parents "$f" "$pkg"; fi; done)
+kpackagetool6 --type Plasma/Applet --upgrade "$pkg" >/dev/null 2>&1 ||
+  kpackagetool6 --type Plasma/Applet --install "$pkg"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$dir/contents/code/komanet" "$HOME/.local/bin/komanet"
 echo "kOMA Network Manager installed; CLI linked at ~/.local/bin/komanet"
